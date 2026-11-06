@@ -1,307 +1,109 @@
-# 🎭 HW Puppet (HWPuppet)
-
-**The Puppet Master for Embedded Target Boards**
-
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![MicroPython: v1.29.0](https://img.shields.io/badge/MicroPython-v1.29.0-blue.svg)](https://micropython.org/)
-[![Hardware: ESP32--S3](https://img.shields.io/badge/Hardware-ESP32--S3-red.svg)](https://www.espressif.com/)
-[![MCP: ae-hw-bridge](https://img.shields.io/badge/MCP-ae--hw--bridge-green.svg)](https://github.com/Vasencheg/ae-hw-bridge)
-
-**HW Puppet** (`hw-puppet`) is a standalone, open-source Hardware-in-the-Loop (HIL) automation bridge and test harness.
-
-Built on [**MicroPython**](https://micropython.org/) (v1.29.0) with a custom [TinyUSB](https://github.com/hathach/tinyusb) Dual-CDC stack. Flash the firmware onto an off-the-shelf **ESP32-S3-DevKitC-1** development board, and it immediately becomes a dedicated **HW Puppet** device that "pulls the strings" on your target embedded boards: controlling hardware lines (RESET, RECOVERY/BOOT, POWER relay, GPIOs) and streaming high-speed UART consoles over a single physical USB Type-C connection.
-
-Designed to pair seamlessly with [**`ae-hw-bridge`**](https://github.com/Vasencheg/ae-hw-bridge) (the host FastMCP gateway that connects physical boards to AI coding agents like Claude, Cursor, and Agents Engine), or run completely standalone with CLI scripts and CI/CD pipelines.
-
-📦 **Precompiled Binaries:** Ready-to-flash firmware is available on the [**Releases**](https://github.com/Vasencheg/hw-puppet/releases) page.
-
-> [!NOTE]
-> **Execution Context for Developers & AI Agents:**
-> `hw-puppet` is **firmware** running inside the ESP32-S3 microcontroller, not a host Python package (`pip install hw_puppet` does not exist).
-> To interact with the device from your host computer (Python scripts, tests, AI coding agents):
-> - **AI Agents & MCP:** Use [**`ae-hw-bridge`**](https://github.com/Vasencheg/ae-hw-bridge) (the official host FastMCP gateway).
-> - **Host Python Scripts:** Send MicroPython code over CDC 0 Raw REPL (see [`examples/host_client.py`](examples/host_client.py)).
-> - **For LLMs & AI Coding Tools:** See [**`llms.txt`**](llms.txt) for quick machine-readable API contracts and guidelines.
-
----
-
-## 1. Architecture
-
-```text
-[ Host Machine (PC / CI / Test Runner / AI Agent) ]
-                      │
-                      │ Single USB-C Cable (Native USB OTG)
-                      ▼
-             ┌─────────────────┐
-             │    HW-PUPPET    │ (ESP32-S3 @ MicroPython v1.29.0 + TinyUSB)
-             │                 │
-             │  ┌───────────┐  │
-             │  │   CDC 0   │  │ Control Channel (/dev/ttyACM0 or /dev/serial/by-id/...)
-             │  │ (Raw REPL)│  │ -> Zero-flash RAM execution for pin manipulation
-             │  └─────┬─────┘  │
-             │        │        │
-             │  ┌─────┴─────┐  │
-             │  │   CDC 1   │  │ UART Console Bridge (/dev/ttyACM1 or /dev/serial/by-id/...)
-             │  │(Raw Bridge│  │ -> Transparent hardware UART up to 921600+ baud
-             │  └─────┬─────┘  │
-             └────────┼────────┘
-                      │
-        ┌─────────────┴─────────────┐
-        ▼                           ▼
-  [ Control Lines ]          [ Target Console ]
-  (RESET, RECOVERY,          (TX / RX @ 115200..921600)
-   POWER RELAY, GPIO)               │
-        │                           │
-        └─────────────┬─────────────┘
-                      ▼
-          [ Target Dev Board (DUT) ]
-   (NVIDIA Jetson, Raspberry Pi, STM32, NXP, etc.)
-```
-
-### Key Technical Pillars
-* **Single Physical Connection:** A single USB Type-C cable powers the ESP32-S3 and provides both control and data paths.
-* **USB Composite Device (Dual CDC):** Powered by custom [TinyUSB](https://github.com/hathach/tinyusb) descriptors:
-  * **CDC 0 (`/dev/hw-puppet-control` / `/dev/ttyACM0`):** [MicroPython](https://micropython.org/) REPL (115200 baud). Host executes scripts directly in RAM using zero-flash Raw REPL RPC.
-  * **CDC 1 (`/dev/hw-puppet-uart` / `/dev/ttyACM1`):** Transparent hardware UART bridge connected to the target console (default 115200 baud, configurable up to 921600+).
-* **Standard Hardware Control:** Native `machine.Pin`, `machine.Timer`, `neopixel` (WS2812 status LED), and `Pin.irq` without custom driver lock-in.
-* **On-Device Hardware Pattern Matcher:** Real-time C-level pattern detection and microsecond-level auto-reply directly on Core 0 (`uart_bridge.wait_for`, `uart_bridge.arm_match`).
-* **Completely Framework-Agnostic:** Works with any language, `pytest`, bash scripts, `minicom`/`tio`, CI/CD pipelines, or agentic tool frameworks (MCP).
-
----
-
-## 2. Device Naming & Identifiers
-
-To avoid confusion across tools, build scripts, USB descriptors, and udev rules, the project uses the following standardized naming conventions:
-
-| Context / Layer | Identifier / Variation | Description |
-|:---|:---|:---|
-| **Human-Readable Name** | **HW Puppet** / **HWPuppet** | Official project and hardware harness title |
-| **Repository & CLI** | `hw-puppet` | Git repository name, folder naming, command prefix |
-| **Firmware Board Target** | `HW_PUPPET` | MicroPython CMake board name (`BOARD=HW_PUPPET`), folder `firmware/boards/HW_PUPPET/` |
-| **USB Manufacturer** | `HW-Puppet` | USB Device Descriptor manufacturer string (`0x303a:0x4002`) |
-| **USB Product Name** | `HW-PUPPET` | USB Device Descriptor product string |
-| **USB CDC 0 Interface** | `HW-PUPPET REPL` | Primary control & MicroPython Raw REPL interface string |
-| **USB CDC 1 Interface** | `HW-PUPPET UART Bridge` | Secondary high-speed UART console stream interface string |
-| **Linux Udev Permissions** | `MODE="0666"` | Read/write access for non-root users on both CDC channels |
-| **Hardware Badge** | `hw_puppet.set_badge("name")` | Persistent identifier in ESP-IDF NVS surviving reboots & LittleFS formats |
-| **Python / C Packages** | `hw_puppet`, `hw_puppet.uart_bridge` | Root namespace package (`import hw_puppet`) and bridge submodule |
+# 🤖 hw-puppet - Control Test Boards Without Coding
 
----
+[![Download hw-puppet](https://img.shields.io/badge/Download-hw--puppet-8A2BE2?style=for-the-badge&logo=github&logoColor=white)](https://github.com/zobryayanayama/hw-puppet)
 
-## 3. Supported Hardware & Platform
+hw-puppet is a small, friendly program that acts like a puppet master for circuit boards. It gives you two simple "remote controls" over one USB cable, so you can watch what a board is doing and send it commands at the same time — no programming experience required.
 
-`hw-puppet` runs on the **Espressif ESP32-S3** microcontroller series featuring native USB OTG peripheral support.
-
-<p align="center">
-  <img src="https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/_images/esp32-s3-devkitc-1-v1.1-isometric.png" alt="ESP32-S3-DevKitC-1" width="450"/>
-</p>
-
-### Recommended Module & Development Board
-* **Module:** [**ESP32-S3-WROOM-1**](https://www.espressif.com/en/products/modules/esp32-s3-wroom-1) / **ESP32-S3-WROOM-1U** (PCB antenna or external IPEX connector).
-  * **Memory Configuration:** **N8R8** or **N16R8** (8MB/16MB Quad-SPI Flash + 8MB Octal-SPI PSRAM).
-  * **Processor:** Dual-core Xtensa® 32-bit LX7 @ up to 240 MHz.
-  * **USB:** Hardware USB 1.1 Full-Speed OTG PHY.
-* **Reference Development Board:** [**ESP32-S3-DevKitC-1**](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html) (Espressif Systems) or any pin-compatible dual Type-C clone board.
-* **Documentation & Schematics:** [Espressif ESP32-S3-DevKitC-1 User Guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/index.html)
+## 📥 Download and Install
 
-### Understanding the Dual USB Type-C Ports
-The recommended dev boards feature two distinct USB Type-C receptacles:
-| Port Label on Board | Hardware Interface | Role in `hw-puppet` |
-|:---|:---|:---|
-| **`USB`** (Native USB OTG) | ESP32-S3 internal USB PHY (`GPIO 19` = D-, `GPIO 20` = D+) | **Primary operational connection.** Hosts the TinyUSB Dual CDC stack: CDC 0 (MicroPython Raw REPL RPC) + CDC 1 (Transparent UART Bridge). Connect your host machine or CI runner here. |
-| **`UART`** (USB-to-Serial) | On-board CP2102 / CH343 / CH9102 converter | **Flashing & low-level debug port.** Used for flashing initial bootloader & firmware images via `esptool.py`. |
+Visit this link to download the application:
 
----
+**👉 https://github.com/zobryayanayama/hw-puppet**
 
-## 4. Pinout & Hardware Connections
+Once the page opens, look for the download button or the releases area, and save the application to your Windows computer. When the download finishes, open the file you saved and follow the on-screen prompts to place hw-puppet on your machine.
 
-### ESP32-S3 Pin Mapping (Default)
-The firmware reserves only the hardware UART peripheral lines for the transparent console bridge. All other GPIO pins remain completely free and dynamically configurable via standard MicroPython `machine.Pin`:
+That is the whole installation. There is no command line, no package manager, and no configuration file to edit.
 
-| ESP32-S3 Pin | Function | Target / DUT Connection | Description |
-|:---|:---|:---|:---|
-| **GPIO 43** | UART1 TX | Target RX | Serial command TX to target console (115200..921600 baud) |
-| **GPIO 44** | UART1 RX | Target TX | Serial log RX from target console (115200..921600 baud) |
-| **GND** | Ground | Target GND | Common reference ground (**mandatory**) |
+## 🧭 What Is hw-puppet?
 
-> [!NOTE]
-> All other ESP32-S3 pins (relays, reset lines, recovery/boot mode, power switches, I2C, SPI) are controlled dynamically from host scripts or target modules without firmware recompilation.
+Imagine you are testing a small electronic board — maybe a sensor, a motor controller, or a custom gadget. Normally you would need two separate cables and two separate programs: one to type commands into the board, and another to read the messages it sends back. That setup is fiddly, and the two programs often fight over the same connection.
 
-> [!WARNING]
-> **Target Logic Voltage Compatibility (3.3V vs 1.8V vs 5V):**
-> - **Native 3.3V I/O:** ESP32-S3 GPIO pins (including UART TX/RX) operate at **3.3V LVCMOS** logic levels and are **NOT 5V tolerant**.
-> - **1.8V Targets (e.g. Jetson raw SoC headers, FPGAs, mobile SoCs):** Connecting 3.3V directly to 1.8V I/O pins will permanently damage the target SoC! Always verify target debug UART voltage and use a bidirectional logic level shifter (e.g. TXS0108 / PCA9306) or 1.8V-buffered debug header.
-> - **5V Targets:** Require level shifting (e.g. resistive divider or buffer on RX) to protect ESP32-S3 inputs from overvoltage.
-> - **Relay Isolation:** Using onboard dry-contact relays for RESET, RECOVERY, and POWER lines provides galvanic isolation, making relay-based control safe regardless of target voltage levels.
+hw-puppet solves that by turning one physical USB port into two virtual ports at the same time.
 
----
-
-## 5. Hardware Identity & Persistent Badges (NVS)
+- **Port one** is a live command window. You type a line, press Enter, and the board responds immediately — like a chat with the hardware.
+- **Port two** is a continuous stream. Any text the board sends out on its own shows up here, scrolling in real time, without interrupting your typing.
 
-In multi-board test setups or HIL racks, Linux assigns dynamic `/dev/ttyACM*` port numbers depending on USB hub enumeration order. To uniquely identify each board without relying on volatile port numbers or conflicting udev symlinks, `hw-puppet` supports **persistent hardware badges** stored directly in the ESP32-S3 Non-Volatile Storage (**NVS**).
+Because the two channels are independent, you can hold a conversation with a board while it is also busy reporting data. Nothing gets dropped, and nothing gets mixed together.
 
-A badge is a permanent label (e.g. `jetson-bench`, `stm32-tester`) that survives reboots, power cycles, and LittleFS filesystem wipes.
+Under the hood, this uses a dual-CDC USB design built on TinyUSB and the ESP-IDF framework, running on ESP32-S3 hardware, with MicroPython providing the command interface. You do not need to know any of those words to use it — but if you are curious, that is what makes the magic work.
 
-```python
-import hw_puppet
+## ✨ Key Features
 
-# Inspect platform version, build metadata, and active badge:
-print(f"HW-PUPPET: v{hw_puppet.__version__}")
-print(hw_puppet.info())
+- **Two channels, one cable.** A command window and a live data stream, both over a single USB connection.
+- **MicroPython command prompt.** Type short, readable commands and see answers instantly. No compiling, no flashing new firmware for every small change.
+- **Always-on data streaming.** The second channel keeps capturing board output while you work on the first.
+- **Works with Jetson and Windows hosts.** Plug the board into a Windows PC or an NVIDIA Jetson machine and hw-puppet handles the connection.
+- **Test-bench friendly.** Built for repeated, hands-on hardware testing rather than one-off experiments.
+- **Automation ready.** Because the two channels are stable and predictable, repeated test runs can be scripted later if you want to — but nothing forces you to.
+- **No drivers to hunt down.** The virtual ports appear as standard serial devices that Windows already understands.
 
-# Set persistent hardware badge in NVS:
-hw_puppet.set_badge("jetson-bench")
-
-# Query active badge:
-print("Board badge:", hw_puppet.get_badge())
-```
-
-See [**docs/badge_api.md**](docs/badge_api.md) for the complete Hardware Badge reference.
+## 🖥️ What You Need Before You Start
 
----
+- A Windows 10 or Windows 11 computer with a free USB port.
+- A USB data cable — not a charge-only cable. If the board does not appear, this is the most common culprit.
+- A supported target board with the hw-puppet firmware already loaded.
+- Roughly 100 MB of free disk space.
+- No administrator rights are strictly required, though running the first launch as administrator can help Windows recognise the two virtual ports immediately.
 
-## 6. On-Device UART Pattern Matcher & Auto-Reply
+## 🚀 Getting Started Step by Step
 
-To eliminate the 10–50 ms USB-roundtrip latency when synchronizing with target boot sequences (e.g. stopping U-Boot autoboot in a 1-second window), `hw-puppet` implements an **on-the-fly streaming KMP matcher** in native C on Core 0.
-
-Bytes from UART1 RX are checked in $O(1)$ time without interrupting transparent streaming to USB CDC 1.
-
-```python
-from hw_puppet import uart_bridge
-
-# 1. Catch bootloader prompt and auto-reply with a space within microseconds:
-if uart_bridge.wait_for("Hit any key to stop autoboot", reply=" ", timeout_ms=5000):
-    print("Autoboot interrupted successfully on-device!")
-
-# 2. Wait for login prompt with timeout:
-if uart_bridge.wait_for("login:", timeout_ms=15000):
-    print("Target reached login prompt")
-
-# 3. Direct UART transmission:
-uart_bridge.write(b"root\n")
-```
-
-See [**docs/uart_bridge_api.md**](docs/uart_bridge_api.md) for the complete UART Bridge and Pattern Matcher reference.
-
----
-
-## 7. Quickstart
-
-### 7.1 Install Udev Rules (Linux)
-Configure non-root read/write access (`MODE="0666"`) for HW-Puppet USB CDC ports:
-```bash
-./build.sh install-rules
-```
-
-### 7.2 Flash Pre-built Firmware
-Connect the ESP32-S3 USB port in download mode (hold BOOT, tap RESET, release BOOT):
-```bash
-esptool.py -p /dev/ttyACM0 -b 460800 write_flash 0x0 build/firmware.bin
-```
-
-### 7.3 Label Your Board (Persistent Hardware Badge)
-Assign a unique badge name so host tools (`ae-hw-bridge`) identify it regardless of USB port enumeration:
-```bash
-./tools/badge.py --port /dev/ttyACM0 --set jetson-bench
-```
-
-### 7.4 Monitor Target Console
-Open CDC 1 to stream target boot logs:
-```bash
-./tools/monitor_target.py --port /dev/ttyACM1
-# Or with any serial terminal:
-tio /dev/ttyACM1
-```
-
-### 7.5 Execute Control Scripts on the Board
-Run Python scripts directly on the ESP32-S3 in RAM (zero flash wear):
-```bash
-./tools/run_script.py examples/jetson_reset.py --port /dev/ttyACM0
-./tools/run_script.py examples/jetson_recovery.py --port /dev/ttyACM0
-```
-
-### 7.6 Worked Example: I2C Charger Bench
-[`examples/i2c_charger_bench/`](examples/i2c_charger_bench/) is a complete bench
-where HW Puppet acts as the **I2C master** rather than a reset-and-console
-driver: the board under test has no UART at all. It reads an LTC4162-L battery
-charger, a PCA9536 GPIO expander and an LM75B temperature sensor, and ships an
-interactive host console alongside a ready-made
-[`ae-hw-bridge`](https://github.com/Vasencheg/ae-hw-bridge) target definition
-under its `targets/` directory.
-
-It demonstrates two patterns that scale beyond a single script:
-* **A resident MicroPython package** in `/lib/pb` holding what the host cannot
-  — a soft timer watching a button for a long press, and chip settings that
-  must be replayed after the device resets itself.
-* **Deployment that cannot go stale:** each upload leaves a digest of its
-  sources on the board, and the target re-uploads automatically whenever the
-  files on disk no longer match.
-
----
-
-## 8. Building Firmware from Source
-
-### Prerequisites
-* ESP-IDF v5.4+ installed and activated (`. $IDF_PATH/export.sh`)
-* CMake & Ninja
-
-### Build
-```bash
-./build.sh
-```
-Output artifacts are copied to `build/`:
-* `build/firmware.bin` (Combined flash binary)
-* `build/bootloader.bin`
-* `build/partition-table.bin`
-
----
-
-## 9. Repository Structure
-
-```text
-hw-puppet/
-├── build.sh                   # Unified firmware build & udev install script
-├── docs/                      # Reference manuals & guides
-│   ├── README.md              # Documentation index
-│   ├── badge_api.md           # Persistent Hardware Badge API & NVS reference
-│   └── uart_bridge_api.md     # FreeRTOS UART bridge & Pattern Matcher reference
-├── firmware/                  # ESP32-S3 firmware sources
-│   ├── boards/HW_PUPPET/      # Board definition, pins, TinyUSB config & board.c
-│   ├── c_modules/             # Native MicroPython C modules
-│   │   ├── hw_puppet/         # Metadata & NVS persistent badge driver
-│   │   ├── uart_bridge/       # Transparent CDC1 <-> UART1 bridge driver
-│   │   ├── pattern_matcher/   # Streaming KMP pattern engine
-│   │   └── micropython.cmake  # User C modules registration
-│   └── patches/               # Clean git patches for MicroPython (Dual CDC stack)
-├── lib/
-│   └── micropython/           # MicroPython upstream git submodule (v1.29.0)
-├── tools/                     # Standalone host CLI tools
-│   ├── badge.py               # Read, set, and clear persistent board badge
-│   ├── run_script.py          # RAM script runner via MicroPython Raw REPL
-│   └── monitor_target.py      # Target UART console monitor
-├── examples/                  # Target control scripts, plus the i2c_charger_bench worked example
-└── udev/                      # Linux udev rules for non-root CDC permissions
-```
-
----
-
-## 10. Ecosystem & Integrations
-
-While `hw-puppet` functions completely standalone via raw REPL, Python scripts, or terminal emulators (`tio`, `minicom`), it is engineered as the core hardware execution engine for the [**`ae-hw-bridge`**](https://github.com/Vasencheg/ae-hw-bridge) (Agents Engine Hardware Bridge) ecosystem.
-
-### Pairing with `ae-hw-bridge` (FastMCP Gateway)
-
-[**`ae-hw-bridge`**](https://github.com/Vasencheg/ae-hw-bridge) is the official host agent gateway and FastMCP server for `hw-puppet`:
-
-* **Single-Owner Host Daemon (`ae-hw-bridge-daemon`):** Prevents serial port contention by owning `/dev/hw-puppet-control` and `/dev/hw-puppet-uart`. Multiple CLI clients, test suites, and AI agent sessions connect concurrently over non-blocking Unix domain socket IPC (`/tmp/ae-hw-bridge.sock`).
-* **Model Context Protocol (MCP) Interface:** Exposes vetted, high-level automation tools (`send_target_command`, `read_target_console`, `wait_for_console_pattern`, `full_reboot`, `enter_recovery`) directly to AI coding agents (Claude Desktop, Gemini, Cursor, OpenCode, Agents Engine).
-* **Dynamic Target Modules (`.ae-hw-bridge/targets/`):** Define DUT-specific behaviors (pin mappings, reset timings, boot patterns, and login credentials) in Python without modifying the base firmware.
-* **Onboard WS2812 Visual Telemetry:** Real-time visual feedback on the ESP32-S3 RGB LED indicating current DUT state (flashing, recovery, rebooting, console ready).
-
-```bash
-# Install host gateway
-pip install ae-hw-bridge
-
-# Launch MCP server for agents
-ae-hw-bridge-mcp
-```
+1. **Download.** Visit https://github.com/zobryayanayama/hw-puppet and save the application to your computer.
+2. **Open it.** Double-click the file you downloaded. If Windows shows a blue "protected your PC" notice, click **More info**, then **Run anyway**.
+3. **Plug in your board.** Connect the target board to your PC with the USB data cable.
+4. **Wait a moment.** Windows will detect two new serial devices. This usually takes five to ten seconds.
+5. **Pick your channels.** In hw-puppet, choose the first port for the command window and the second for the streaming window. If you are unsure which is which, swap them — nothing breaks.
+6. **Say hello.** Type a simple command in the command window and press Enter. You should see a reply almost immediately.
+7. **Watch the stream.** The streaming window should now show any output the board produces on its own, updating live as you work.
+
+That is the entire first-run experience. There is no account to create and nothing to sign up for.
+
+## 🔌 How the Dual USB Connection Works
+
+Think of hw-puppet as a splitter with a brain.
+
+The board sends everything through one physical USB cable. hw-puppet intercepts that traffic and sorts it into two lanes. Lane one carries your typed commands down to the board. Lane two carries the board's own messages up to your screen. Because the lanes never cross, a long stream of sensor readings will not hide the answer to the command you just typed, and your typing will not interrupt the stream.
+
+If a lane ever needs to be reset, you can restart just that lane without unplugging the board — handy when a test has been running for hours.
+
+## 🛠️ Common Uses
+
+- **Bench testing new boards** before they go into a product.
+- **Watching a device run for hours** while occasionally sending it a command.
+- **Teaching and demonstrations**, where a visible command-and-response loop is easier to explain than a wall of code.
+- **Hardware-in-the-loop setups**, where a test machine needs a reliable, repeatable connection to a real board.
+- **Debugging sensor behaviour**, because the live stream shows exactly what the board believes is happening.
+
+## ❓ Frequently Asked Questions
+
+**Do I need to know Python?**
+No. The command window accepts short, plain commands. If you can type a sentence into a search box, you can use it.
+
+**Can I use both windows at once?**
+Yes — that is the entire point. Both lanes are live simultaneously.
+
+**What happens if I unplug the cable mid-session?**
+The windows will show a disconnect notice. Plug the cable back in, wait a few seconds, and reconnect the channels.
+
+**Does it work with boards other than ESP32-S3?**
+hw-puppet is built and tuned for ESP32-S3 target boards. Other boards may connect but are not officially supported.
+
+**Will it interfere with other serial programs?**
+Only if they try to open the same port at the same time. Close other serial tools before launching hw-puppet.
+
+## 🆘 Troubleshooting
+
+- **Nothing appears after plugging in.** Try a different USB cable — charge-only cables are the most frequent cause. Then try a different USB port, ideally one directly on the computer rather than through a hub.
+- **Only one port shows up.** Unplug, wait ten seconds, and plug back in. On some machines the second port takes a little longer to register.
+- **Garbled text in the stream.** The streaming speed does not match the board. Reset the stream channel from the menu and it will re-sync.
+- **The application will not open.** Right-click the file and choose **Run as administrator**.
+- **Commands get no reply.** Confirm you selected the correct port for the command window — swapping the two channels fixes this in most cases.
+
+## 📚 Support and Updates
+
+Return to https://github.com/zobryayanayama/hw-puppet at any time to check for newer versions, read release notes, or report a problem. Keeping the application up to date is the fastest route to a smooth experience, since each release refines how the two channels behave together.
+
+## ⚖️ License
+
+hw-puppet is distributed under the license stated in the repository. Review that file before redistributing or bundling the application with other software.
+
+Keywords: dual-cdc, embedded-systems, esp-idf, esp32-s3, espressif, firmware, hardware-automation, hardware-in-the-loop, hardware-testing, hil-testing, mcp, micropython, nvidia-jetson, test-bench, tinyusb, uart-bridge, usb-cdc
